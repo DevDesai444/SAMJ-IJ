@@ -4,8 +4,12 @@
     What it does:
       1. Downloads the official Fiji distribution (JDK bundled) for Windows x64.
       2. Extracts Fiji into an install directory (default: $HOME\Fiji-SAMJ).
+         The zip lays down a "Fiji\" folder that contains everything (jars,
+         plugins, the fiji.bat / fiji-windows-x64.exe launcher). We leave that
+         layout alone -- moving pieces around breaks Fiji's own launcher.
       3. Registers the SAMJ update site and installs plugins headlessly.
-      4. Applies the JNA fix documented in the SAMJ-IJ README.
+      4. Applies the JNA fix documented in the SAMJ-IJ README (best-effort;
+         recent Fiji builds already ship the correct jna-5.14.0 pair).
       5. Prints how to launch the resulting Fiji.
 
     Usage (from a normal PowerShell prompt -- admin NOT required):
@@ -13,6 +17,10 @@
       powershell -ExecutionPolicy Bypass -File .\install.ps1
       powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDir "C:\Tools\Fiji-SAMJ"
       powershell -ExecutionPolicy Bypass -File .\install.ps1 -Force
+
+    Or, one-liner via web:
+
+      iwr https://raw.githubusercontent.com/DevDesai444/SAMJ-IJ/main/installer/install.ps1 -UseBasicParsing | iex
 #>
 
 param(
@@ -36,25 +44,46 @@ if ([System.Environment]::Is64BitOperatingSystem -eq $false) {
     Die "Fiji requires a 64-bit version of Windows."
 }
 
+# ---------- helper: locate the Fiji root that the zip extracted ----------
+function Find-FijiRoot([string]$base) {
+    if (-not (Test-Path $base)) { return $null }
+    # 1) folder that contains a fiji.bat launcher AND a jars\ folder
+    $hit = Get-ChildItem -Path $base -Recurse -Depth 3 -File -Filter 'fiji.bat' -ErrorAction SilentlyContinue |
+           Where-Object { Test-Path (Join-Path $_.Directory.FullName 'jars') } |
+           Select-Object -First 1
+    if ($hit) { return $hit.Directory.FullName }
+    # 2) folder named 'Fiji' with jars\ child
+    $hit = Get-ChildItem -Path $base -Recurse -Depth 3 -Directory -Filter 'Fiji' -ErrorAction SilentlyContinue |
+           Where-Object { Test-Path (Join-Path $_.FullName 'jars') } |
+           Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+    # 3) legacy Fiji.app-style root
+    $hit = Get-ChildItem -Path $base -Recurse -Depth 3 -Directory -Filter 'Fiji.app' -ErrorAction SilentlyContinue |
+           Where-Object { Test-Path (Join-Path $_.FullName 'jars') } |
+           Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+    return $null
+}
+
 # ---------- prepare install dir ----------
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Set-Location $InstallDir
 
-$fijiApp = Join-Path $InstallDir "Fiji.app"
-if (Test-Path $fijiApp) {
+$fijiRoot = Find-FijiRoot $InstallDir
+if ($fijiRoot) {
     if ($Force) {
-        Log "Force flag set -- removing existing $fijiApp"
-        Remove-Item -Recurse -Force $fijiApp
+        Log "Force flag set -- removing existing $fijiRoot"
+        Remove-Item -Recurse -Force $fijiRoot
+        $fijiRoot = $null
     } else {
-        Log "Existing Fiji.app found at $fijiApp -- re-running update site registration and JNA fix only."
+        Log "Existing Fiji found at $fijiRoot -- re-running update site registration and JNA fix only."
     }
 }
 
 # ---------- download + extract ----------
-if (-not (Test-Path $fijiApp)) {
+if (-not $fijiRoot) {
     $zipPath = Join-Path $InstallDir $FijiZipName
     Log "Downloading Fiji (~700 MB): $FijiUrl"
-    # Speed hack: turn off Invoke-WebRequest progress bar (it slows large downloads to a crawl on PS5).
+    # Speed hack: turn off Invoke-WebRequest progress bar (it kills large downloads on PS5).
     $prev = $ProgressPreference
     $ProgressPreference = 'SilentlyContinue'
     try {
@@ -67,61 +96,59 @@ if (-not (Test-Path $fijiApp)) {
     Expand-Archive -Path $zipPath -DestinationPath $InstallDir -Force
     Remove-Item $zipPath -Force
 
-    if (-not (Test-Path $fijiApp)) {
-        $nested = Get-ChildItem -Path $InstallDir -Recurse -Depth 3 -Directory -Filter 'Fiji.app' | Select-Object -First 1
-        if (-not $nested) { Die "Extraction succeeded but Fiji.app was not found under $InstallDir" }
-        if ($nested.FullName -ne $fijiApp) { Move-Item $nested.FullName $fijiApp }
-    }
+    $fijiRoot = Find-FijiRoot $InstallDir
+    if (-not $fijiRoot) { Die "Extraction succeeded but no Fiji root was found under $InstallDir" }
 }
-Log "Fiji.app at: $fijiApp"
+Log "Fiji root: $fijiRoot"
 
-# ---------- locate Fiji executable ----------
+# ---------- locate the Fiji CLI launcher ----------
 $candidates = @(
-    (Join-Path $fijiApp 'fiji-windows-x64.exe'),
-    (Join-Path $fijiApp 'ImageJ-win64.exe')
+    (Join-Path $fijiRoot 'fiji-windows-x64-console.exe'),  # preferred for --headless
+    (Join-Path $fijiRoot 'fiji-windows-x64-gui.exe'),
+    (Join-Path $fijiRoot 'fiji-windows-x64.exe'),
+    (Join-Path $fijiRoot 'fiji.bat'),
+    (Join-Path $fijiRoot 'ImageJ-win64.exe')               # legacy
 )
 $fijiExe = $null
 foreach ($c in $candidates) { if (Test-Path $c) { $fijiExe = $c; break } }
 if (-not $fijiExe) {
-    $fijiExe = (Get-ChildItem -Path $fijiApp -Filter '*.exe' -Recurse -Depth 2 |
-                Where-Object { $_.Name -match '^(fiji|ImageJ)-' } |
+    $fijiExe = (Get-ChildItem -Path $fijiRoot -Depth 2 -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^(fiji|ImageJ).*\.(exe|bat)$' } |
                 Select-Object -First 1 -ExpandProperty FullName)
 }
-if (-not $fijiExe) { Die "Could not find the Fiji launcher inside $fijiApp" }
-Log "Fiji launcher: $fijiExe"
+if (-not $fijiExe) { Die "Could not find the Fiji CLI launcher inside $fijiRoot" }
+Log "Fiji CLI launcher: $fijiExe"
 
 # ---------- register SAMJ update site + install plugins headlessly ----------
-Log "Adding update site: $SamjSiteName -> $SamjSiteUrl"
-# 'edit-update-site' upserts (add if missing, update if present); fall back to 'add-update-site' on old Fiji builds.
+Log "Registering update site: $SamjSiteName -> $SamjSiteUrl"
 & $fijiExe --headless --update edit-update-site $SamjSiteName $SamjSiteUrl
 if ($LASTEXITCODE -ne 0) {
-    Log "edit-update-site not supported by this Fiji build; using add-update-site instead."
+    Log "edit-update-site not accepted; retrying with add-update-site."
     & $fijiExe --headless --update add-update-site $SamjSiteName $SamjSiteUrl
     if ($LASTEXITCODE -ne 0) { Die "Failed to register the SAMJ update site." }
 }
 
-Log "Downloading and installing SAMJ plugins (this can take several minutes) ..."
+Log "Downloading and installing SAMJ plugins (can take 5-10 min) ..."
 & $fijiExe --headless --update update
-if ($LASTEXITCODE -ne 0) { Warn "Fiji updater exited with code $LASTEXITCODE -- inspect $fijiApp\update-log.txt if plugins are missing." }
+if ($LASTEXITCODE -ne 0) { Warn "Fiji updater exited with code $LASTEXITCODE -- inspect $fijiRoot\update-log.txt if plugins are missing." }
 
-# ---------- JNA fix per SAMJ README ----------
-$jarsDir = Join-Path $fijiApp 'jars'
+# ---------- JNA fix per SAMJ README (idempotent) ----------
+$jarsDir = Join-Path $fijiRoot 'jars'
 if (Test-Path $jarsDir) {
-    Log "Applying JNA fix in $jarsDir"
-    $badFiles = @('jna-3.2.7.jar', 'jnacl-1.0.0.jar')
-    foreach ($bad in $badFiles) {
+    Log "Verifying JNA state in $jarsDir"
+    foreach ($bad in @('jna-3.2.7.jar', 'jnacl-1.0.0.jar')) {
         $p = Join-Path $jarsDir $bad
         if (Test-Path $p) { Log "  removing $bad"; Remove-Item $p -Force }
     }
-    $keep = @('jna-5.14.0.jar','jna-platform-5.14.0.jar')
+    $keep = @('jna-5.14.0.jar', 'jna-platform-5.14.0.jar')
     Get-ChildItem -Path $jarsDir -Filter 'jna*.jar' | ForEach-Object {
         if ($keep -notcontains $_.Name) {
-            Log ("  removing extra {0}" -f $_.Name)
+            Log ("  removing stray {0}" -f $_.Name)
             Remove-Item $_.FullName -Force
         }
     }
 } else {
-    Warn "No jars\ directory under $fijiApp -- skipping JNA cleanup (Fiji layout may have changed)."
+    Warn "No jars\ directory under $fijiRoot -- skipping JNA cleanup."
 }
 
 # ---------- done ----------
@@ -129,12 +156,15 @@ Write-Host ""
 Write-Host "[SAMJ] installation complete." -ForegroundColor Green
 Write-Host ""
 Write-Host "Fiji + SAMJ is installed at:"
-Write-Host "  $fijiApp"
+Write-Host "  $fijiRoot"
 Write-Host ""
-Write-Host "To launch:"
-Write-Host "  Start-Process '$fijiExe'"
+Write-Host "To launch (double-click one of these, or run from PowerShell):"
+Write-Host "  Start-Process '$(Join-Path $fijiRoot 'fiji.bat')'"
+Write-Host "  Start-Process '$(Join-Path $fijiRoot 'fiji-windows-x64-gui.exe')'"
 Write-Host ""
 Write-Host "Inside Fiji:"
 Write-Host "  Plugins > SAMJ > SAMJ Annotator"
 Write-Host ""
-Write-Host "First run of any SAM model triggers a one-time environment setup (Appose/Micromamba). Allow up to ~15 min on modest hardware."
+Write-Host "The first time you pick a SAM model, SAMJ provisions a Python env"
+Write-Host "via Appose/Micromamba. Allow up to ~15 min on modest hardware;"
+Write-Host "subsequent runs are instant."
