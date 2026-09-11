@@ -66,23 +66,25 @@ python3 installer/install.py --force
 
 The script prints an OS-specific launch command at the end. In short:
 
-- **macOS:** `open ~/Fiji-SAMJ/Fiji.app`
-- **Windows:** double-click `%USERPROFILE%\Fiji-SAMJ\Fiji.app\fiji-windows-x64.exe` (or `Start-Process` it)
-- **Linux:** `~/Fiji-SAMJ/Fiji.app/fiji-linux64`
+- **macOS:** `open ~/Fiji-SAMJ/Fiji/Fiji.app`
+- **Windows:** double-click `%USERPROFILE%\Fiji-SAMJ\Fiji\fiji.bat` (or `Start-Process` it)
+- **Linux:** `~/Fiji-SAMJ/Fiji/fiji`
 
 Then inside Fiji: **Plugins → SAMJ → SAMJ Annotator**.
+
+> The Fiji distribution extracts into a `Fiji/` folder that contains everything (the runtime jars, the `plugins/` folder, and on macOS the `Fiji.app` bundle sits inside it as a sibling of the launcher script). Do **not** relocate `Fiji.app` out of that folder — Fiji's own launcher script needs the bundle next to it.
 
 ## What the script does under the hood
 
 1. Detect OS + CPU architecture; pick the matching zip from `https://downloads.imagej.net/fiji/latest/`.
 2. Download the zip (retries up to 3× on network hiccups).
-3. Extract into `<install-dir>` so you end with `<install-dir>/Fiji.app/…`.
-4. macOS only: `xattr -dr com.apple.quarantine Fiji.app` so Gatekeeper does not block it.
-5. Run Fiji's own updater in headless mode:
+3. Extract into `<install-dir>` so you end with `<install-dir>/Fiji/…` (with `Fiji/Fiji.app`, `Fiji/jars/`, `Fiji/plugins/`, `Fiji/fiji`, `Fiji/fiji.bat` all inside).
+4. macOS only: `xattr -dr com.apple.quarantine` on the Fiji folder so Gatekeeper does not block it.
+5. Run Fiji's own updater in headless mode via the portable `fiji` (or `fiji.bat`) launcher — which itself dispatches to `fiji-macos-arm64` / `fiji-linux-x64` / `fiji-windows-x64-*.exe`:
    - `fiji --headless --update edit-update-site SAMJ https://sites.imagej.net/SAMJ/`
      (falls back to `add-update-site` on older Fiji builds)
    - `fiji --headless --update update`
-6. Delete `jars/jna-3.2.7.jar`, `jars/jnacl-1.0.0.jar`, and any stray `jna*.jar` other than `jna-5.14.0.jar` / `jna-platform-5.14.0.jar` (the pair SAMJ requires).
+6. Best-effort cleanup: delete `jars/jna-3.2.7.jar`, `jars/jnacl-1.0.0.jar`, and any stray `jna*.jar` other than `jna-5.14.0.jar` / `jna-platform-5.14.0.jar` (the pair SAMJ requires). Recent Fiji builds already ship the right pair, so this is usually a no-op.
 
 If you already had a `Fiji.app` in that directory, the script keeps your existing binary and only re-runs steps 4–6 (unless you pass `--force` / `FORCE=1`, which wipes it first).
 
