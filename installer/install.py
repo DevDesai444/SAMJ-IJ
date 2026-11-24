@@ -226,6 +226,23 @@ def fix_jna(fiji_root: Path) -> None:
             warn(f"  couldn't remove {f}: {e}")
 
 
+def install_bundled_scripts(fiji_root: Path) -> None:
+    """Copy the bundled SAMJ Fiji scripts into Fiji so they appear under Plugins > SAMJ.
+
+    When this installer runs from a clone of the repo, installer/scripts/ sits next to
+    this file and holds the extra SAMJ scripts (3D annotator, HRF auto-prompter). When
+    only this single file was downloaded, the directory is absent and we skip it.
+    """
+    source_dir = Path(__file__).resolve().parent / "scripts"
+    if not source_dir.is_dir():
+        warn("Bundled SAMJ scripts not found next to the installer; skipping.")
+        warn(f"To add them later, copy installer/scripts/* into {fiji_root / 'scripts'}.")
+        return
+    dest_dir = fiji_root / "scripts"
+    log(f"Installing bundled SAMJ scripts into {dest_dir}")
+    shutil.copytree(source_dir, dest_dir, dirs_exist_ok=True)
+
+
 def macos_downloads_guard(install_dir: Path, system: str) -> None:
     if system != "Darwin":
         return
@@ -293,6 +310,7 @@ def main() -> None:
     register_update_site(fiji_exe)
     install_plugins(fiji_exe)
     fix_jna(fiji_root)
+    install_bundled_scripts(fiji_root)
 
     print()
     log("installation complete.")
@@ -319,7 +337,9 @@ def main() -> None:
         print(f"  '{fiji_exe}'")
     print()
     print("Inside Fiji:")
-    print("  Plugins > SAMJ > SAMJ Annotator")
+    print("  Plugins > SAMJ > SAMJ Annotator        (2D, interactive)")
+    print("  Plugins > SAMJ > SAMJ 3D Annotator     (3D stacks, with slice-to-slice propagation)")
+    print("  Plugins > SAMJ > SAMJ HRF AutoPrompter (automatic HRF detection and segmentation)")
     print()
     print("First run of any SAM model triggers a one-time env setup via Appose/Micromamba.")
     print("Allow up to ~15 min on modest hardware; subsequent runs are instant.")

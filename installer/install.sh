@@ -65,6 +65,15 @@ esac
 FIJI_URL="$FIJI_BASE/$FIJI_ZIP"
 log "Platform: $PLATFORM/$uname_m   archive: $FIJI_ZIP"
 
+# ---------- locate the bundled SAMJ Fiji scripts (best effort) ----------
+# When this installer is run from a clone of the repo, installer/scripts/ sits
+# next to this file and holds the extra SAMJ Fiji scripts (3D annotator, HRF
+# auto-prompter). We copy them into Fiji so they appear under Plugins > SAMJ.
+# When the installer is piped straight from the web the directory is absent, so
+# we simply skip it with a note.
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+BUNDLED_SCRIPTS_DIR="${SELF_DIR:+$SELF_DIR/scripts}"
+
 # ---------- macOS Downloads-folder guard (per SAMJ README) ----------
 if [ "$PLATFORM" = "macos" ]; then
   case "$INSTALL_DIR" in
@@ -203,6 +212,21 @@ else
   warn "No jars/ directory under $FIJI_ROOT -- skipping JNA cleanup."
 fi
 
+# ---------- install the bundled SAMJ scripts (3D annotator, HRF auto-prompter) ----------
+install_bundled_scripts() {
+  local fijiRoot="$1"
+  if [ -z "$BUNDLED_SCRIPTS_DIR" ] || [ ! -d "$BUNDLED_SCRIPTS_DIR" ]; then
+    warn "Bundled SAMJ scripts not found next to the installer; skipping."
+    warn "To add them later, copy installer/scripts/* into $fijiRoot/scripts/."
+    return 0
+  fi
+  local destDir="$fijiRoot/scripts"
+  log "Installing bundled SAMJ scripts into $destDir"
+  mkdir -p "$destDir"
+  cp -R "$BUNDLED_SCRIPTS_DIR"/. "$destDir"/
+}
+install_bundled_scripts "$FIJI_ROOT"
+
 # ---------- done ----------
 if [ "$PLATFORM" = "macos" ]; then
   LAUNCH_HINT="open '$FIJI_ROOT/Fiji.app'"
@@ -219,7 +243,9 @@ To launch:
   $LAUNCH_HINT
 
 Inside Fiji:
-  Plugins > SAMJ > SAMJ Annotator
+  Plugins > SAMJ > SAMJ Annotator        (2D, interactive)
+  Plugins > SAMJ > SAMJ 3D Annotator     (3D stacks, with slice-to-slice propagation)
+  Plugins > SAMJ > SAMJ HRF AutoPrompter (automatic HRF detection and segmentation)
 
 The first time you pick a SAM model, SAMJ provisions a Python env via
 Appose/Micromamba. Allow up to ~15 min on modest hardware; subsequent

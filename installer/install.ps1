@@ -151,6 +151,21 @@ if (Test-Path $jarsDir) {
     Warn "No jars\ directory under $fijiRoot -- skipping JNA cleanup."
 }
 
+# ---------- install the bundled SAMJ scripts (3D annotator, HRF auto-prompter) ----------
+# When run from a clone of the repo, installer\scripts\ sits next to this file and holds
+# the extra SAMJ scripts. We copy them into Fiji so they appear under Plugins > SAMJ. When
+# the installer is piped straight from the web the directory is absent, so we skip it.
+$bundledScriptsDir = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'scripts' } else { $null }
+if ($bundledScriptsDir -and (Test-Path $bundledScriptsDir)) {
+    $scriptsDest = Join-Path $fijiRoot 'scripts'
+    Log "Installing bundled SAMJ scripts into $scriptsDest"
+    New-Item -ItemType Directory -Force -Path $scriptsDest | Out-Null
+    Copy-Item -Path (Join-Path $bundledScriptsDir '*') -Destination $scriptsDest -Recurse -Force
+} else {
+    Warn "Bundled SAMJ scripts not found next to the installer; skipping."
+    Warn "To add them later, copy installer\scripts\* into $fijiRoot\scripts\."
+}
+
 # ---------- done ----------
 Write-Host ""
 Write-Host "[SAMJ] installation complete." -ForegroundColor Green
@@ -163,7 +178,9 @@ Write-Host "  Start-Process '$(Join-Path $fijiRoot 'fiji.bat')'"
 Write-Host "  Start-Process '$(Join-Path $fijiRoot 'fiji-windows-x64-gui.exe')'"
 Write-Host ""
 Write-Host "Inside Fiji:"
-Write-Host "  Plugins > SAMJ > SAMJ Annotator"
+Write-Host "  Plugins > SAMJ > SAMJ Annotator        (2D, interactive)"
+Write-Host "  Plugins > SAMJ > SAMJ 3D Annotator     (3D stacks, with slice-to-slice propagation)"
+Write-Host "  Plugins > SAMJ > SAMJ HRF AutoPrompter (automatic HRF detection and segmentation)"
 Write-Host ""
 Write-Host "The first time you pick a SAM model, SAMJ provisions a Python env"
 Write-Host "via Appose/Micromamba. Allow up to ~15 min on modest hardware;"
