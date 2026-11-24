@@ -50,6 +50,7 @@ import ij.WindowManager
 import ij.gui.PointRoi
 import ij.plugin.filter.MaximumFinder
 import ij.plugin.frame.RoiManager
+import ij.process.ColorProcessor
 import ij.process.ShortProcessor
 import net.imglib2.img.display.imagej.ImageJFunctions
 
@@ -138,11 +139,11 @@ def detectFoci = { ip, double tolerance, double minBrightness, int maxFoci ->
     for (int i = 0; i < maxima.npoints; i++) {
         int x = maxima.xpoints[i]
         int y = maxima.ypoints[i]
-        if (ip.getPixelValue(x, y) >= floor) foci.add([x, y] as int[])
+        if (ip.getf(x, y) >= floor) foci.add([x, y] as int[])   // getf: raw value, matching the stats above
     }
 
     if (maxFoci > 0 && foci.size() > maxFoci) {
-        foci.sort { a, b -> Double.compare(ip.getPixelValue(b[0], b[1]), ip.getPixelValue(a[0], a[1])) }
+        foci.sort { a, b -> Double.compare(ip.getf(b[0], b[1]), ip.getf(a[0], a[1])) }
         foci = new ArrayList<int[]>(foci.subList(0, maxFoci))
     }
     return foci
@@ -173,6 +174,8 @@ def buildPrompts = { List<int[]> foci, boolean useBox, int halfSize ->
 def segmentSlice = { int sliceIdx, List<int[]> pointList, List<Rectangle> rectList ->
     if (pointList.isEmpty() && rectList.isEmpty()) return null
     def sliceProc = imp.getStack().getProcessor(sliceIdx).duplicate()
+    if (sliceProc instanceof ColorProcessor)
+        sliceProc = sliceProc.convertToByteProcessor()   // SAM needs a greyscale (real) slice
     def sliceImp = new ImagePlus("slice_${sliceIdx}", sliceProc)
     def rai = ImageJFunctions.wrapReal(sliceImp)
     return SAMJ_Annotator.samJReturnMask(state.model, rai, pointList, rectList)
@@ -203,14 +206,16 @@ def paintForeground = { maskRai, int sliceIdx, int labelValue ->
 // so the user can see where the script prompted on each slice.
 def addPointsToRoiManager = { List<int[]> foci, int sliceIdx ->
     if (foci.isEmpty()) return
-    def rm = RoiManager.getRoiManager()
     int n = foci.size()
     def xs = new int[n]
     def ys = new int[n]
     foci.eachWithIndex { pt, i -> xs[i] = pt[0]; ys[i] = pt[1] }
     def proi = new PointRoi(xs, ys, n)
     proi.setPosition(sliceIdx)
-    rm.add(imp, proi, sliceIdx)
+    // The ROI Manager is a Swing window, so touch it only on the event thread.
+    SwingUtilities.invokeLater {
+        RoiManager.getRoiManager().add(imp, proi, sliceIdx)
+    }
 }
 
 // ------------------------------------------------------------------
@@ -351,6 +356,7 @@ runBtn.addActionListener({ e ->
     def sliceRange = wholeStack ? (1..D) : [imp.getCurrentSlice()]
 
     runBtn.setEnabled(false)
+    loadBtn.setEnabled(false)
     status.setText("Detecting and segmenting HRF over ${sliceRange.size()} slice(s) …")
 
     Thread.start {
@@ -384,12 +390,14 @@ runBtn.addActionListener({ e ->
                 labels.updateAndDraw()
                 status.setText("Done. ${fFoci} HRF candidates on ${fSlices} slice(s); painted ${fPainted} px with label ${labelValue}.")
                 runBtn.setEnabled(true)
+                loadBtn.setEnabled(true)
             }
         } catch (Throwable ex) {
             ex.printStackTrace()
             SwingUtilities.invokeLater {
                 status.setText("Run failed: ${ex.getClass().getSimpleName()}: ${ex.getMessage()}")
                 runBtn.setEnabled(true)
+                loadBtn.setEnabled(true)
             }
         }
     }
