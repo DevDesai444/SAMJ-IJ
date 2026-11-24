@@ -62,8 +62,12 @@ def sourceTitle = imp.getTitle()
 // 2. helpers
 // ------------------------------------------------------------------
 
-// A voxel's linear key. z, y, x are 0-based.
-def keyOf = { int x, int y, int z -> (z * H + y) * W + x }
+// Stop and warn rather than exhaust the heap on a dense (non-sparse) stack.
+final long MAX_FOREGROUND_VOXELS = 20_000_000L
+
+// A voxel's linear key, computed in 64-bit so large volumes cannot overflow.
+// z, y, x are 0-based.
+def keyOf = { int x, int y, int z -> ((long) z * H + y) * W + x }
 
 // The neighbour offsets for the chosen connectivity (only the ones we union with).
 def neighbourOffsets = { boolean diagonal ->
@@ -80,20 +84,20 @@ def neighbourOffsets = { boolean diagonal ->
 }
 
 // Union-find over voxel keys, stored sparsely so only foreground voxels cost memory.
-def parent = new HashMap<Integer, Integer>()
-def find = { int a ->
-    int r = a
+def parent = new HashMap<Long, Long>()
+def find = { long a ->
+    long r = a
     while (parent.get(r) != r) {
         parent.put(r, parent.get(parent.get(r)))   // path halving keeps the tree flat
         r = parent.get(r)
     }
     return r
 }
-def union = { int a, int b ->
+def union = { long a, long b ->
     parent.putIfAbsent(a, a)
     parent.putIfAbsent(b, b)
-    int ra = find(a)
-    int rb = find(b)
+    long ra = find(a)
+    long rb = find(b)
     if (ra != rb) parent.put(ra, rb)
 }
 
@@ -109,6 +113,10 @@ def linkObjects = { boolean diagonal, int minSize ->
 
     // Union every foreground voxel with its foreground neighbours.
     for (int z = 0; z < D; z++) {
+        if (parent.size() > MAX_FOREGROUND_VOXELS)
+            throw new IllegalStateException("Mask is too dense for the linker " +
+                "(over ${MAX_FOREGROUND_VOXELS} foreground voxels). Threshold or clean the " +
+                "mask so only the foci remain, then try again.")
         def proc = procs[z]
         for (int y = 0; y < H; y++) {
             for (int x = 0; x < W; x++) {
@@ -127,36 +135,43 @@ def linkObjects = { boolean diagonal, int minSize ->
     }
 
     // Count the voxels under each root so small specks can be dropped.
-    def sizeOfRoot = new HashMap<Integer, Integer>()
+    def sizeOfRoot = new HashMap<Long, Integer>()
     parent.keySet().each { k ->
-        int r = find(k)
+        long r = find(k)
         sizeOfRoot.put(r, (sizeOfRoot.get(r) ?: 0) + 1)
     }
 
-    // Give each surviving root a sequential object ID.
-    def idOfRoot = new HashMap<Integer, Integer>()
+    // Give each surviving root a sequential object ID. The output is a 16-bit stack,
+    // so IDs stop at 65535; any components beyond that are left unlabelled rather
+    // than wrapped round into another object's ID.
+    def idOfRoot = new HashMap<Long, Integer>()
     int nextId = 1
+    int dropped = 0
     sizeOfRoot.each { root, size ->
-        if (size >= minSize) {
+        if (size < minSize) return
+        if (nextId <= 65535) {
             idOfRoot.put(root, nextId)
             nextId++
+        } else {
+            dropped++
         }
     }
     int objectCount = nextId - 1
-    if (objectCount > 65535)
-        IJ.log("[SAMJ Linker] WARNING: ${objectCount} objects exceed the 16-bit range; IDs above 65535 will wrap.")
+    if (dropped > 0)
+        IJ.log("[SAMJ Linker] WARNING: ${dropped} object(s) beyond the 16-bit limit were left unlabelled.")
 
     // Write the object IDs into a fresh 16-bit stack.
+    long sliceVoxels = (long) W * H
     def outStack = new ImageStack(W, H)
     for (int z = 0; z < D; z++) outStack.addSlice(new ShortProcessor(W, H))
     def procsOut = (1..D).collect { outStack.getProcessor(it) }
     parent.keySet().each { k ->
         int id = idOfRoot.get(find(k)) ?: 0
         if (id != 0) {
-            int z = (int) (k / (W * H))
-            int rem = k % (W * H)
+            int z = (int) (k / sliceVoxels)
+            long rem = k % sliceVoxels
             int y = (int) (rem / W)
-            int x = rem % W
+            int x = (int) (rem % W)
             procsOut[z].set(x, y, id)
         }
     }
