@@ -7,10 +7,22 @@
  *   2. Run this script: Plugins > SAMJ > SAMJ 3D Annotator.
  *   3. Pick a SAM model in the panel, click Load model (only slow the first time).
  *   4. Navigate to any slice on your 3D window and draw a rectangle ROI.
- *   5. Click "Segment current slice" -- the resulting binary mask is painted
+ *   5a. Click "Segment current slice" -- the resulting binary mask is painted
  *      into a companion 3D label stack ("<title>_SAMJ_3D_Labels") at that Z,
  *      using the label ID from the spinner. Advance the slice slider, repeat.
+ *   5b. Or click "Propagate active ROI through the stack" -- this segments the
+ *      current slice, then carries the mask from slice to slice automatically
+ *      (forward and, optionally, backward), using the previous slice's mask
+ *      bounding box as the box prompt for the next slice. It stops at the stack
+ *      end, at the "Max slices" limit, or as soon as a slice comes back empty.
+ *      One click annotates a whole structure through depth, so you no longer
+ *      have to draw a prompt on every single B-scan.
  *   6. Click "Save 3D labels" when finished (or File > Save As on the labels window).
+ *
+ * Note on propagation: SAM2's internal video memory is not exposed through
+ * SAMJ's Java API, so this carries the mask forward by re-prompting each slice
+ * with the previous slice's bounding box. It is simple and robust, and works
+ * with every SAM variant SAMJ offers.
  *
  * The companion label stack is a normal 16-bit ImagePlus you can open again,
  * feed to Labkit as an existing labeling, or use for training.
@@ -109,6 +121,103 @@ MODELS["EfficientViTSAM L2 (paper-recommended CPU pick)"] = { new EfficientViTSA
 def state = [ model: null, modelName: null ]
 
 // ------------------------------------------------------------------
+// 3b. small helpers shared by the single-slice and propagation paths
+// ------------------------------------------------------------------
+
+// Wrap slice sliceIdx (1-based) of the source stack as a 2D ImgLib2 image.
+def extractSliceRai = { int sliceIdx ->
+    def sliceProc = imp.getStack().getProcessor(sliceIdx).duplicate()
+    def sliceImp = new ImagePlus("slice_${sliceIdx}", sliceProc)
+    return ImageJFunctions.wrapReal(sliceImp)
+}
+
+// Segment one slice with a single rectangle prompt; returns the mask RAI.
+def segmentRect = { int sliceIdx, java.awt.Rectangle rect ->
+    def rai = extractSliceRai(sliceIdx)
+    def rectList = new ArrayList<java.awt.Rectangle>()
+    rectList.add(rect)
+    def pointList = new ArrayList<int[]>()
+    return SAMJ_Annotator.samJReturnMask(state.model, rai, pointList, rectList)
+}
+
+// Paint every non-zero mask pixel into the label stack at sliceIdx; returns the pixel count.
+def paintMask = { maskRai, int sliceIdx, int labelValue ->
+    def dstProc = labels.getStack().getProcessor(sliceIdx) as ShortProcessor
+    def maskAccess = maskRai.randomAccess()
+    def pos = new long[2]
+    int painted = 0
+    for (int y = 0; y < H; y++) {
+        pos[1] = y
+        for (int x = 0; x < W; x++) {
+            pos[0] = x
+            maskAccess.setPosition(pos)
+            if (maskAccess.get().getInteger() != 0) {
+                dstProc.set(x, y, labelValue)
+                painted++
+            }
+        }
+    }
+    return painted
+}
+
+// Tight bounding box of the non-zero mask pixels, or null when the mask is empty.
+def maskBoundingBox = { maskRai ->
+    def maskAccess = maskRai.randomAccess()
+    def pos = new long[2]
+    int minX = W, minY = H, maxX = -1, maxY = -1
+    for (int y = 0; y < H; y++) {
+        pos[1] = y
+        for (int x = 0; x < W; x++) {
+            pos[0] = x
+            maskAccess.setPosition(pos)
+            if (maskAccess.get().getInteger() != 0) {
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
+        }
+    }
+    if (maxX < 0) return null
+    return new java.awt.Rectangle(minX, minY, maxX - minX + 1, maxY - minY + 1)
+}
+
+// Grow a rectangle by a fraction on each side and clamp it to the image bounds.
+def expandRect = { java.awt.Rectangle r, double marginFraction ->
+    int growX = (int) Math.round(r.width * marginFraction)
+    int growY = (int) Math.round(r.height * marginFraction)
+    int x0 = Math.max(0, r.x - growX)
+    int y0 = Math.max(0, r.y - growY)
+    int x1 = Math.min(W - 1, r.x + r.width - 1 + growX)
+    int y1 = Math.min(H - 1, r.y + r.height - 1 + growY)
+    return new java.awt.Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1)
+}
+
+// Walk one direction (step = +1 forward, -1 backward) carrying the previous mask's
+// bounding box as the next box prompt. Stops at the stack end, at maxSlices, or as
+// soon as a slice comes back empty. Returns the number of slices painted.
+def propagateFrom = { int fromSlice, int step, java.awt.Rectangle fromBox,
+                      int labelValue, double marginFraction, int maxSlices ->
+    int painted = 0
+    def box = fromBox
+    int slice = fromSlice + step
+    int walked = 0
+    while (slice >= 1 && slice <= D && box != null) {
+        if (maxSlices > 0 && walked >= maxSlices) break
+        def prompt = expandRect(box, marginFraction)
+        def mask = segmentRect(slice, prompt)
+        def newBox = maskBoundingBox(mask)
+        if (newBox == null) break   // nothing found on this slice: stop this direction
+        paintMask(mask, slice, labelValue)
+        box = newBox
+        painted++
+        walked++
+        slice += step
+    }
+    return painted
+}
+
+// ------------------------------------------------------------------
 // 4. UI
 // ------------------------------------------------------------------
 def frame = new JFrame("SAMJ 3D Annotator — " + sourceTitle)
@@ -143,6 +252,26 @@ def segBtn = new JButton("Segment current slice with active ROI")
 segBtn.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
 segBtn.setEnabled(false)
 panel.add(segBtn)
+
+// Row: propagation options
+def propRow = new JPanel(new FlowLayout(FlowLayout.LEFT))
+propRow.add(new JLabel("Box margin %:"))
+def marginSpinner = new JSpinner(new SpinnerNumberModel(10, 0, 100, 5))
+marginSpinner.setPreferredSize(new Dimension(70, 24))
+propRow.add(marginSpinner)
+propRow.add(new JLabel("Max slices (0 = to end):"))
+def maxSpinner = new JSpinner(new SpinnerNumberModel(0, 0, 10000, 1))
+maxSpinner.setPreferredSize(new Dimension(80, 24))
+propRow.add(maxSpinner)
+def backwardsCheck = new JCheckBox("also propagate backwards", true)
+propRow.add(backwardsCheck)
+panel.add(propRow)
+
+// Row: propagate
+def propBtn = new JButton("Propagate active ROI through the stack")
+propBtn.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
+propBtn.setEnabled(false)
+panel.add(propBtn)
 
 // Row: save
 def saveBtn = new JButton("Save 3D labels as TIFF…")
@@ -185,8 +314,9 @@ loadBtn.addActionListener({ e ->
             state.model = MODELS[name].call()
             state.modelName = name
             SwingUtilities.invokeLater {
-                status.setText("${name} ready. On your ${sourceTitle} window: pick a slice, draw a rectangle, press Segment.")
+                status.setText("${name} ready. On your ${sourceTitle} window: pick a slice, draw a rectangle, then Segment or Propagate.")
                 segBtn.setEnabled(true)
+                propBtn.setEnabled(true)
                 loadBtn.setEnabled(true)
             }
         } catch (Throwable ex) {
@@ -200,48 +330,23 @@ loadBtn.addActionListener({ e ->
 } as ActionListener)
 
 segBtn.addActionListener({ e ->
-    def activeImp = imp  // the source stack; SAMJ works from THIS window, not any duplicate
-    def roi = activeImp.getRoi()
+    def roi = imp.getRoi()  // SAMJ works from the source window, not any duplicate
     if (roi == null) {
         status.setText("Draw a rectangle ROI on the ${sourceTitle} window first.")
         return
     }
     def bounds = roi.getBounds()
-    def rectList = new ArrayList<java.awt.Rectangle>()
-    rectList.add(new java.awt.Rectangle(bounds.x, bounds.y, bounds.width, bounds.height))
-    def pointList = new ArrayList<int[]>()
-    def sliceIdx = activeImp.getCurrentSlice()  // 1-based
+    def rect = new java.awt.Rectangle(bounds.x, bounds.y, bounds.width, bounds.height)
+    def sliceIdx = imp.getCurrentSlice()  // 1-based
     def labelValue = (labelSpinner.getValue() as Integer).intValue()
-
-    // Extract slice N as a standalone 2D ImagePlus and wrap as an ImgLib2 RAI
-    def sliceProc = activeImp.getStack().getProcessor(sliceIdx).duplicate()
-    def sliceImp = new ImagePlus("slice_${sliceIdx}", sliceProc)
-    RandomAccessibleInterval rai = ImageJFunctions.wrapReal(sliceImp)
 
     segBtn.setEnabled(false)
     status.setText("Segmenting slice ${sliceIdx} with rectangle ${bounds.width}x${bounds.height} …")
 
     Thread.start {
         try {
-            def maskRai = SAMJ_Annotator.samJReturnMask(state.model, rai, pointList, rectList)
-
-            // Paint mask (non-zero) into labels stack at slice sliceIdx with labelValue
-            def dstProc = labels.getStack().getProcessor(sliceIdx) as ShortProcessor
-            def maskAccess = maskRai.randomAccess()
-            def pos = new long[2]
-            int painted = 0
-            for (int y = 0; y < H; y++) {
-                pos[1] = y
-                for (int x = 0; x < W; x++) {
-                    pos[0] = x
-                    maskAccess.setPosition(pos)
-                    int v = maskAccess.get().getInteger()
-                    if (v != 0) {
-                        dstProc.set(x, y, labelValue)
-                        painted++
-                    }
-                }
-            }
+            def maskRai = segmentRect(sliceIdx, rect)
+            int painted = paintMask(maskRai, sliceIdx, labelValue)
             labels.setSlice(sliceIdx)
             labels.updateAndDraw()
 
@@ -255,6 +360,59 @@ segBtn.addActionListener({ e ->
             SwingUtilities.invokeLater {
                 status.setText("Segment failed on slice ${sliceIdx}: ${ex.getClass().getSimpleName()}: ${ex.getMessage()}")
                 segBtn.setEnabled(true)
+            }
+        }
+    }
+} as ActionListener)
+
+propBtn.addActionListener({ e ->
+    def roi = imp.getRoi()
+    if (roi == null) {
+        status.setText("Draw a rectangle ROI on the ${sourceTitle} window first, then press Propagate.")
+        return
+    }
+    def bounds = roi.getBounds()
+    def seedRect = new java.awt.Rectangle(bounds.x, bounds.y, bounds.width, bounds.height)
+    def startSlice = imp.getCurrentSlice()
+    def labelValue = (labelSpinner.getValue() as Integer).intValue()
+    def marginFraction = (marginSpinner.getValue() as Integer).intValue() / 100.0
+    def maxSlices = (maxSpinner.getValue() as Integer).intValue()
+    def goBackwards = backwardsCheck.isSelected()
+
+    segBtn.setEnabled(false)
+    propBtn.setEnabled(false)
+    status.setText("Propagating from slice ${startSlice} … (one segmentation per slice)")
+
+    Thread.start {
+        try {
+            // Seed slice: segment the ROI the user drew and remember its mask box.
+            def seedMask = segmentRect(startSlice, seedRect)
+            paintMask(seedMask, startSlice, labelValue)
+            def seedBox = maskBoundingBox(seedMask)
+
+            int forwardCount = 0
+            int backwardCount = 0
+            if (seedBox != null) {
+                forwardCount = propagateFrom(startSlice, +1, seedBox, labelValue, marginFraction, maxSlices)
+                if (goBackwards)
+                    backwardCount = propagateFrom(startSlice, -1, seedBox, labelValue, marginFraction, maxSlices)
+            }
+            int total = 1 + forwardCount + backwardCount
+
+            SwingUtilities.invokeLater {
+                if (autoIncr.isSelected()) labelSpinner.setValue(labelValue + 1)
+                labels.setSlice(startSlice)
+                labels.updateAndDraw()
+                status.setText("Propagated label ${labelValue} across ${total} slices (seed ${startSlice}, +${forwardCount} forward, +${backwardCount} backward).")
+                segBtn.setEnabled(true)
+                propBtn.setEnabled(true)
+            }
+        } catch (Throwable ex) {
+            ex.printStackTrace()
+            SwingUtilities.invokeLater {
+                status.setText("Propagation failed: ${ex.getClass().getSimpleName()}: ${ex.getMessage()}")
+                segBtn.setEnabled(true)
+                propBtn.setEnabled(true)
             }
         }
     }
