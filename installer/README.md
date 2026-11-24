@@ -8,6 +8,9 @@ No admin/root privileges are required. Fiji is installed for the current user on
 
 - Fiji **bundled with a Java 21 JDK** (~700 MB download, ~1.4 GB extracted).
 - The SAMJ plugin family (SAMJ Annotator + supported SAM/SAM2 backends).
+- The bundled SAMJ scripts copied into Fiji so they show up under `Plugins > SAMJ`:
+  **SAMJ 3D Annotator** (3D stacks with slice-to-slice propagation) and
+  **SAMJ HRF AutoPrompter** (automatic Hyperreflective Foci segmentation).
 - The JNA jar cleanup so `NoSuchMethodError: com.sun.jna.Native.load` never appears.
 - On macOS, the quarantine flag is removed so Gatekeeper does not block the first launch.
 
@@ -105,4 +108,6 @@ If you already had a `Fiji.app` in that directory, the script keeps your existin
 - `install.sh` -- macOS / Linux (bash).
 - `install.ps1` -- Windows (PowerShell 5+).
 - `install.py` -- pure-Python fallback for any OS with Python 3.8+.
+- `scripts/` -- extra SAMJ Fiji scripts copied into `<fijiRoot>/scripts/` on install
+  (SAMJ 3D Annotator, SAMJ HRF AutoPrompter).
 - `README.md` -- this file.

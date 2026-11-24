@@ -13,6 +13,7 @@ The SAMJ-IJ is a powerful Fiji plugin for annotating microscopy images using var
 - [Model Installation](#model-installation)
 - [Annotating Images](#annotating-images)
 - [Saving Annotations](#saving-annotations)
+- [3D stacks and automatic HRF prompting](#3d-stacks-and-automatic-hrf-prompting)
 - [Use Cases](#use-cases)
 - [Contributors](#contributors)
 - [Notes](#notes)
@@ -184,6 +185,50 @@ for (i = 0; i < files.length; i++) {
 ```
 
 In addition there is [this excellent Image.sc forum post](https://forum.image.sc/t/using-samj-in-fiji-macros/117394) by Jorge Ramírez, which includes clear example macros.
+
+## 3D stacks and automatic HRF prompting
+
+The standard SAMJ Annotator works on one 2D slice at a time and needs a prompt
+for every object. Two bundled scripts lift those limits for volumetric data such
+as retinal OCT. They ship under `installer/scripts/` and the one-shot installer
+copies them into Fiji, so after installing they appear under `Plugins > SAMJ`.
+They call the same public SAMJ API as the manual annotator, so any SAM model you
+have installed works with them.
+
+### SAMJ 3D Annotator — annotate a whole stack from one ROI
+
+`Plugins > SAMJ > SAMJ 3D Annotator`
+
+1. Open your 3D stack and run the script.
+2. Load a model, pick a slice and draw a rectangle around the object.
+3. Either segment that single slice, or click **Propagate active ROI through the
+   stack**: the script segments the current slice and then carries the mask
+   forward and, optionally, backward, using the previous slice's mask bounding
+   box (grown by a margin) as the prompt for the next slice. It stops at the
+   stack end, at the chosen slice limit, or when a slice comes back empty.
+4. Masks are painted into a companion 16-bit label stack you can save as TIFF.
+
+This means you no longer have to draw a prompt on every B-scan. SAM2's own video
+memory is not exposed through SAMJ's Java API, so propagation works by
+re-prompting each slice rather than by the model's internal memory, which keeps
+it simple and compatible with every SAM variant.
+
+### SAMJ HRF AutoPrompter — automatic Hyperreflective Foci segmentation
+
+`Plugins > SAMJ > SAMJ HRF AutoPrompter`
+
+1. Open your OCT image or stack and run the script.
+2. Load a model and choose the scope (current slice or whole stack).
+3. Click **Detect HRF and segment**. Per slice the script finds bright punctate
+   candidates with ImageJ's Find Maxima (a prominence setting plus a brightness
+   floor), turns each into a preset box or point prompt, runs SAMJ once on the
+   slice, and paints the masks into a companion label stack. It can also drop the
+   detected points into the ROI Manager so you can see what was prompted.
+
+The detector is a simple candidate finder, not a trained classifier: the
+prominence is what keeps it on the small foci rather than on the continuous
+bright retinal bands. Tune the prominence and brightness for your data and use
+the interactive annotator to correct any misses.
 
 ## Use Cases
 This Fiji plugin is intended to work with microscopy images. To show its versatility among different images, here are some use cases.
