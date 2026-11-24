@@ -72,7 +72,7 @@ import java.awt.event.ActionListener
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 
-// Belt-and-suspenders: force the SAM env root to Fiji/appose_<arch>. SAMJ's
+// Belt-and-braces: force the SAM env root to Fiji/appose_<arch>. SAMJ's
 // auto-detection walks up from java.home to find Fiji.App and can fail in some
 // launch paths; setting it explicitly is harmless when auto-detection works.
 try {
@@ -217,16 +217,14 @@ def paintForeground = { maskRai, int sliceIdx, int labelValue ->
 // SAM rescales its whole input to 1024 px, so on a full B-scan a tiny focus can
 // shrink to sub-pixel and disappear. Cropping a small tile keeps the focus large
 // in SAM's view. The cost is one segmentation per focus rather than per slice.
-def segmentFocusInTile = { int sliceIdx, int[] focus, boolean useBox, int halfSize, int tileSize, int labelValue ->
-    def sliceProc = imp.getStack().getProcessor(sliceIdx).duplicate()
-    if (sliceProc instanceof ColorProcessor) sliceProc = sliceProc.convertToByteProcessor()
-
+// sliceProc is the slice already duplicated (and greyscaled) by the caller, so one focus
+// does not re-copy the whole B-scan; tileHalf is the tile half-size in pixels.
+def segmentFocusInTile = { sliceProc, int sliceIdx, int[] focus, boolean useBox, int halfSize, int tileHalf, int labelValue ->
     // Tile bounds on the full slice, clamped to the image.
-    int half = tileSize.intdiv(2)
-    int x0 = Math.max(0, focus[0] - half)
-    int y0 = Math.max(0, focus[1] - half)
-    int x1 = Math.min(W - 1, focus[0] + half)
-    int y1 = Math.min(H - 1, focus[1] + half)
+    int x0 = Math.max(0, focus[0] - tileHalf)
+    int y0 = Math.max(0, focus[1] - tileHalf)
+    int x1 = Math.min(W - 1, focus[0] + tileHalf)
+    int y1 = Math.min(H - 1, focus[1] + tileHalf)
     int cw = x1 - x0 + 1
     int ch = y1 - y0 + 1
 
@@ -249,6 +247,7 @@ def segmentFocusInTile = { int sliceIdx, int[] focus, boolean useBox, int halfSi
         pointList.add([lx, ly] as int[])
     }
     def maskRai = SAMJ_Annotator.samJReturnMask(state.model, rai, pointList, rectList)
+    if (maskRai == null) return 0
 
     // Paint the tile-sized mask back at the tile origin.
     def dstProc = labels.getStack().getProcessor(sliceIdx) as ShortProcessor
@@ -344,8 +343,8 @@ panel.add(promptRow)
 def tileRow = new JPanel(new FlowLayout(FlowLayout.LEFT))
 def useTilesCheck = new JCheckBox("Segment in a tile around each focus (best for tiny foci)", false)
 tileRow.add(useTilesCheck)
-tileRow.add(new JLabel("Tile size px:"))
-def tileSpinner = new JSpinner(new SpinnerNumberModel(192, 32, 2048, 32))
+tileRow.add(new JLabel("Tile half-size px:"))
+def tileSpinner = new JSpinner(new SpinnerNumberModel(96, 16, 1024, 16))
 tileSpinner.setPreferredSize(new Dimension(80, 24))
 tileRow.add(tileSpinner)
 panel.add(tileRow)
@@ -430,7 +429,7 @@ runBtn.addActionListener({ e ->
     boolean wholeStack = (scopeCombo.getSelectedItem() as String) == "Whole stack"
     boolean markPoints = showPoints.isSelected()
     boolean useTiles = useTilesCheck.isSelected()
-    int tileSize = (tileSpinner.getValue() as Integer).intValue()
+    int tileHalf = (tileSpinner.getValue() as Integer).intValue()
 
     def sliceRange = wholeStack ? (1..D) : [imp.getCurrentSlice()]
 
@@ -451,9 +450,12 @@ runBtn.addActionListener({ e ->
                 totalFoci += foci.size()
 
                 if (useTiles) {
-                    // One native-resolution tile per focus.
+                    // One native-resolution tile per focus, cropped from a single
+                    // greyscale copy of this slice.
+                    def tileSource = imp.getStack().getProcessor(sliceIdx).duplicate()
+                    if (tileSource instanceof ColorProcessor) tileSource = tileSource.convertToByteProcessor()
                     foci.each { focus ->
-                        totalPainted += segmentFocusInTile(sliceIdx, focus, useBox, halfSize, tileSize, labelValue)
+                        totalPainted += segmentFocusInTile(tileSource, sliceIdx, focus, useBox, halfSize, tileHalf, labelValue)
                     }
                 } else {
                     // One segmentation for the whole slice with all prompts.

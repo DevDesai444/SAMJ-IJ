@@ -49,7 +49,7 @@ import ij.process.ColorProcessor
 import ij.process.ShortProcessor
 import net.imglib2.img.display.imagej.ImageJFunctions
 
-// Belt-and-suspenders: force the SAM env root to Fiji/appose_arm64 (or the
+// Belt-and-braces: force the SAM env root to Fiji/appose_arm64 (or the
 // arch-appropriate name). SAMJ's auto-detection walks up from java.home to
 // find Fiji.App and can fail in some launch paths; setting it explicitly is
 // harmless when auto-detection would have worked anyway.
