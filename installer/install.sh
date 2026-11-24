@@ -215,7 +215,9 @@ fi
 # ---------- install the bundled SAMJ scripts (3D annotator, HRF auto-prompter) ----------
 install_bundled_scripts() {
   local fijiRoot="$1"
-  if [ -z "$BUNDLED_SCRIPTS_DIR" ] || [ ! -d "$BUNDLED_SCRIPTS_DIR" ]; then
+  # Require the SAMJ marker folder so a piped one-liner cannot pick up some
+  # unrelated scripts/ directory that merely happens to be in the current folder.
+  if [ -z "$BUNDLED_SCRIPTS_DIR" ] || [ ! -d "$BUNDLED_SCRIPTS_DIR/Plugins/SAMJ" ]; then
     warn "Bundled SAMJ scripts not found next to the installer; skipping."
     warn "To add them later, copy installer/scripts/* into $fijiRoot/scripts/."
     return 0

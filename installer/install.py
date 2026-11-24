@@ -234,7 +234,8 @@ def install_bundled_scripts(fiji_root: Path) -> None:
     only this single file was downloaded, the directory is absent and we skip it.
     """
     source_dir = Path(__file__).resolve().parent / "scripts"
-    if not source_dir.is_dir():
+    # Require the SAMJ marker folder before copying anything.
+    if not (source_dir / "Plugins" / "SAMJ").is_dir():
         warn("Bundled SAMJ scripts not found next to the installer; skipping.")
         warn(f"To add them later, copy installer/scripts/* into {fiji_root / 'scripts'}.")
         return

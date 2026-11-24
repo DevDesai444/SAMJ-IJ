@@ -156,7 +156,8 @@ if (Test-Path $jarsDir) {
 # the extra SAMJ scripts. We copy them into Fiji so they appear under Plugins > SAMJ. When
 # the installer is piped straight from the web the directory is absent, so we skip it.
 $bundledScriptsDir = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'scripts' } else { $null }
-if ($bundledScriptsDir -and (Test-Path $bundledScriptsDir)) {
+# Require the SAMJ marker folder before copying anything.
+if ($bundledScriptsDir -and (Test-Path (Join-Path $bundledScriptsDir 'Plugins\SAMJ'))) {
     $scriptsDest = Join-Path $fijiRoot 'scripts'
     Log "Installing bundled SAMJ scripts into $scriptsDest"
     New-Item -ItemType Directory -Force -Path $scriptsDest | Out-Null
