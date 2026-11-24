@@ -29,6 +29,15 @@
  * prominence for your data, and use SAMJ's interactive annotator to correct any
  * misses.
  *
+ * Boundary quality for small foci: the default prompt is a small box, not a
+ * point, and SAMJ keeps only the largest ROI per prompt, so SAM is far less
+ * likely to flood out into the bright retinal bands than a bare point would be.
+ * SAM also rescales its input to 1024 px, which can shrink a tiny focus to
+ * sub-pixel on a full B-scan. Tick "Segment in a tile around each focus" to run
+ * SAM on a small native-resolution crop around each candidate instead; the focus
+ * then stays large in SAM's view. This costs one segmentation per focus rather
+ * than per slice, so it is slower but much kinder to the smallest foci.
+ *
  * Under the hood it calls SAMJ's public static Java API
  * ai.nets.samj.ij.SAMJ_Annotator.samJReturnMask(model, slice_rai, points, rects)
  * per slice, exactly like the manual annotator does.
@@ -202,6 +211,64 @@ def paintForeground = { maskRai, int sliceIdx, int labelValue ->
     return painted
 }
 
+// Segment a single focus inside a small native-resolution tile around it, and
+// paint the result straight into the label stack. Returns the painted count.
+//
+// SAM rescales its whole input to 1024 px, so on a full B-scan a tiny focus can
+// shrink to sub-pixel and disappear. Cropping a small tile keeps the focus large
+// in SAM's view. The cost is one segmentation per focus rather than per slice.
+def segmentFocusInTile = { int sliceIdx, int[] focus, boolean useBox, int halfSize, int tileSize, int labelValue ->
+    def sliceProc = imp.getStack().getProcessor(sliceIdx).duplicate()
+    if (sliceProc instanceof ColorProcessor) sliceProc = sliceProc.convertToByteProcessor()
+
+    // Tile bounds on the full slice, clamped to the image.
+    int half = tileSize.intdiv(2)
+    int x0 = Math.max(0, focus[0] - half)
+    int y0 = Math.max(0, focus[1] - half)
+    int x1 = Math.min(W - 1, focus[0] + half)
+    int y1 = Math.min(H - 1, focus[1] + half)
+    int cw = x1 - x0 + 1
+    int ch = y1 - y0 + 1
+
+    sliceProc.setRoi(new Rectangle(x0, y0, cw, ch))
+    def cropImp = new ImagePlus("tile", sliceProc.crop())
+    def rai = ImageJFunctions.wrapReal(cropImp)
+
+    // One prompt for this focus, in tile-local coordinates.
+    int lx = focus[0] - x0
+    int ly = focus[1] - y0
+    def pointList = new ArrayList<int[]>()
+    def rectList = new ArrayList<Rectangle>()
+    if (useBox) {
+        int bx0 = Math.max(0, lx - halfSize)
+        int by0 = Math.max(0, ly - halfSize)
+        int bx1 = Math.min(cw - 1, lx + halfSize)
+        int by1 = Math.min(ch - 1, ly + halfSize)
+        rectList.add(new Rectangle(bx0, by0, bx1 - bx0 + 1, by1 - by0 + 1))
+    } else {
+        pointList.add([lx, ly] as int[])
+    }
+    def maskRai = SAMJ_Annotator.samJReturnMask(state.model, rai, pointList, rectList)
+
+    // Paint the tile-sized mask back at the tile origin.
+    def dstProc = labels.getStack().getProcessor(sliceIdx) as ShortProcessor
+    def maskAccess = maskRai.randomAccess()
+    def pos = new long[2]
+    int painted = 0
+    for (int y = 0; y < ch; y++) {
+        pos[1] = y
+        for (int x = 0; x < cw; x++) {
+            pos[0] = x
+            maskAccess.setPosition(pos)
+            if (maskAccess.get().getInteger() != 0) {
+                dstProc.set(x0 + x, y0 + y, labelValue)
+                painted++
+            }
+        }
+    }
+    return painted
+}
+
 // Drop the detected foci onto the source image's ROI Manager as one PointRoi,
 // so the user can see where the script prompted on each slice.
 def addPointsToRoiManager = { List<int[]> foci, int sliceIdx ->
@@ -272,6 +339,16 @@ def halfSpinner = new JSpinner(new SpinnerNumberModel(6, 1, 200, 1))
 halfSpinner.setPreferredSize(new Dimension(70, 24))
 promptRow.add(halfSpinner)
 panel.add(promptRow)
+
+// Row: tiling (keeps tiny foci from vanishing under SAM's 1024 px rescaling)
+def tileRow = new JPanel(new FlowLayout(FlowLayout.LEFT))
+def useTilesCheck = new JCheckBox("Segment in a tile around each focus (best for tiny foci)", false)
+tileRow.add(useTilesCheck)
+tileRow.add(new JLabel("Tile size px:"))
+def tileSpinner = new JSpinner(new SpinnerNumberModel(192, 32, 2048, 32))
+tileSpinner.setPreferredSize(new Dimension(80, 24))
+tileRow.add(tileSpinner)
+panel.add(tileRow)
 
 // Row: label + show points
 def labelRow = new JPanel(new FlowLayout(FlowLayout.LEFT))
@@ -352,6 +429,8 @@ runBtn.addActionListener({ e ->
     int labelValue = (labelSpinner.getValue() as Integer).intValue()
     boolean wholeStack = (scopeCombo.getSelectedItem() as String) == "Whole stack"
     boolean markPoints = showPoints.isSelected()
+    boolean useTiles = useTilesCheck.isSelected()
+    int tileSize = (tileSpinner.getValue() as Integer).intValue()
 
     def sliceRange = wholeStack ? (1..D) : [imp.getCurrentSlice()]
 
@@ -371,9 +450,17 @@ runBtn.addActionListener({ e ->
                 slicesWithFoci++
                 totalFoci += foci.size()
 
-                def prompts = buildPrompts(foci, useBox, halfSize)
-                def maskRai = segmentSlice(sliceIdx, prompts[0], prompts[1])
-                totalPainted += paintForeground(maskRai, sliceIdx, labelValue)
+                if (useTiles) {
+                    // One native-resolution tile per focus.
+                    foci.each { focus ->
+                        totalPainted += segmentFocusInTile(sliceIdx, focus, useBox, halfSize, tileSize, labelValue)
+                    }
+                } else {
+                    // One segmentation for the whole slice with all prompts.
+                    def prompts = buildPrompts(foci, useBox, halfSize)
+                    def maskRai = segmentSlice(sliceIdx, prompts[0], prompts[1])
+                    totalPainted += paintForeground(maskRai, sliceIdx, labelValue)
+                }
                 if (markPoints) addPointsToRoiManager(foci, sliceIdx)
 
                 final int shownSlice = sliceIdx
