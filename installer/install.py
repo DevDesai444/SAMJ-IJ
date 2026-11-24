@@ -341,6 +341,7 @@ def main() -> None:
     print("  Plugins > SAMJ > SAMJ Annotator        (2D, interactive)")
     print("  Plugins > SAMJ > SAMJ 3D Annotator     (3D stacks, with slice-to-slice propagation)")
     print("  Plugins > SAMJ > SAMJ HRF AutoPrompter (automatic HRF detection and segmentation)")
+    print("  Plugins > SAMJ > SAMJ 3D Linker        (join per-slice masks into 3D objects)")
     print()
     print("First run of any SAM model triggers a one-time env setup via Appose/Micromamba.")
     print("Allow up to ~15 min on modest hardware; subsequent runs are instant.")

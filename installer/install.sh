@@ -248,6 +248,7 @@ Inside Fiji:
   Plugins > SAMJ > SAMJ Annotator        (2D, interactive)
   Plugins > SAMJ > SAMJ 3D Annotator     (3D stacks, with slice-to-slice propagation)
   Plugins > SAMJ > SAMJ HRF AutoPrompter (automatic HRF detection and segmentation)
+  Plugins > SAMJ > SAMJ 3D Linker        (join per-slice masks into 3D objects)
 
 The first time you pick a SAM model, SAMJ provisions a Python env via
 Appose/Micromamba. Allow up to ~15 min on modest hardware; subsequent

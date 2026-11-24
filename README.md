@@ -230,6 +230,27 @@ prominence is what keeps it on the small foci rather than on the continuous
 bright retinal bands. Tune the prominence and brightness for your data and use
 the interactive annotator to correct any misses.
 
+**Boundary quality for small foci.** The default prompt is a small box (not a
+point) and SAMJ keeps only the largest ROI per prompt, so SAM is far less likely
+to spill out into the bright retinal bands. SAM also rescales its input to
+1024 px, which can shrink a tiny focus below a pixel on a full B-scan; tick
+*Segment in a tile around each focus* to run SAM on a small native-resolution
+crop around each candidate instead, which keeps the focus large in SAM's view
+(at the cost of one segmentation per focus).
+
+### SAMJ 3D Linker — give the masks depth coherence
+
+`Plugins > SAMJ > SAMJ 3D Linker`
+
+Because SAMJ segments each slice on its own, one focus that spans several
+B-scans ends up as a pile of independent 2D masks. Run the linker on a mask or
+label stack to label its connected 3D components: every non-zero voxel is
+foreground, neighbouring foreground voxels are joined (6- or 26-connectivity,
+the latter tolerating a focus that drifts slightly between slices), and each
+object is written to a new 16-bit `..._Objects` stack with its own ID. A
+minimum-size filter drops tiny specks. It is a plain connected-components linker
+and is intended for the sparse masks that HRF produces.
+
 ## Use Cases
 This Fiji plugin is intended to work with microscopy images. To show its versatility among different images, here are some use cases.
 
