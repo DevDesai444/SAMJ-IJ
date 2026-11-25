@@ -218,25 +218,33 @@ it simple and compatible with every SAM variant.
 `Plugins > SAMJ > SAMJ HRF AutoPrompter`
 
 1. Open your OCT image or stack and run the script.
-2. Load a model and choose the scope (current slice or whole stack).
-3. Click **Detect HRF and segment**. Per slice the script finds bright punctate
-   candidates with ImageJ's Find Maxima (a prominence setting plus a brightness
-   floor), turns each into a preset box or point prompt, runs SAMJ once on the
-   slice, and paints the masks into a companion label stack. It can also drop the
-   detected points into the ROI Manager so you can see what was prompted.
+2. Load a SAM model and choose the scope (current slice or whole stack).
+3. Point the **Detector weights** box at your trained detector file
+   (`samj_hrf_detector.pt`, by default looked for in the Fiji folder), then click
+   **Detect HRF and segment**. Per slice the script runs the trained detector to
+   locate the foci, feeds the predicted boxes to SAMJ's SAM as prompts, paints the
+   masks into a companion label stack, and drops the detected boxes into the ROI
+   Manager so you can see what the detector found.
 
-The detector is a simple candidate finder, not a trained classifier: the
-prominence is what keeps it on the small foci rather than on the continuous
-bright retinal bands. Tune the prominence and brightness for your data and use
-the interactive annotator to correct any misses.
+The detector is a **trained HRF model**, not a brightness heuristic: a U-Net
+(segmentation-models-pytorch, ResNet-34) trained on OCT HRF. It runs in SAMJ's own
+Python environment (the Appose env that already has PyTorch), just like the SAM
+model, via `hrf_detector.py`. This replaces the earlier brightness/prominence
+detector, which on real OCT locked onto the bright retinal band and missed the
+actual foci. On held-out B-scans the trained detector's detections land on real
+HRF with ~0.95 precision (voxel Dice ≈ 0.68); recall is moderate and data-bound
+(trained on one patient's two eyes), so use the interactive annotator for misses.
 
-**Boundary quality for small foci.** The default prompt is a small box (not a
-point) and SAMJ keeps only the largest ROI per prompt, so SAM is far less likely
-to spill out into the bright retinal bands. SAM also rescales its input to
-1024 px, which can shrink a tiny focus below a pixel on a full B-scan; tick
-*Segment in a tile around each focus* to run SAM on a small native-resolution
-crop around each candidate instead, which keeps the focus large in SAM's view
-(at the cost of one segmentation per focus).
+The weights file is not shipped in this repository (it is large and derived from
+private data). Train your own with the documented recipe, or place your
+`samj_hrf_detector.pt` in the Fiji folder and point the Weights box at it.
+
+**Boundary quality for small foci.** SAMJ keeps only the largest ROI per prompt,
+so SAM is far less likely to spill out into the bright retinal bands. SAM also
+rescales its input to 1024 px, which can shrink a tiny focus below a pixel on a
+full B-scan; tick *tile around each focus* to run SAM on a small native-resolution
+crop around each detection instead, which keeps the focus large in SAM's view (at
+the cost of one segmentation per focus).
 
 ### SAMJ 3D Linker — give the masks depth coherence
 
