@@ -119,14 +119,32 @@ def state = [
 // 4. helpers (one small job each)
 // ------------------------------------------------------------------
 
+// The volume's 1 and 99.5 percentiles, sampled once, so every slice is normalised
+// the same way training normalised the whole volume (not per slice).
+def volumeBounds = {
+    def stack = imp.getStack()
+    def vals = new ArrayList<Float>()
+    int zStep = Math.max(1, (int) (D / 25))
+    for (int z = 1; z <= D; z += zStep) {
+        def proc = stack.getProcessor(z)
+        int n = W * H; int pStep = Math.max(1, (int) (n / 4000))
+        for (int i = 0; i < n; i += pStep) vals.add(proc.getf(i))
+    }
+    Collections.sort(vals)
+    int loIdx = (int) Math.round(0.010 * (vals.size() - 1))
+    int hiIdx = (int) Math.round(0.995 * (vals.size() - 1))
+    return [vals.get(loIdx), vals.get(hiIdx)]
+}
+
 // Run the trained detector on one slice and return its HRF boxes.
-def detectBoxes = { int sliceIdx, double threshold ->
+def detectBoxes = { int sliceIdx, double threshold, double lo, double hi ->
     def ip = imp.getStack().getProcessor(sliceIdx)
     def tiff = File.createTempFile("samj_slice_", ".tif")
     def outJson = File.createTempFile("samj_boxes_", ".json")
     IJ.saveAsTiff(new ImagePlus("slice", ip.duplicate()), tiff.getAbsolutePath())
     def cmd = [state.python, state.detector, tiff.getAbsolutePath(),
-               state.weights, outJson.getAbsolutePath(), threshold.toString()]
+               state.weights, outJson.getAbsolutePath(), threshold.toString(), "4",
+               lo.toString(), hi.toString()]
     def pb = new ProcessBuilder(cmd as String[]); pb.redirectErrorStream(true)
     def proc = pb.start(); def log = proc.getInputStream().getText("UTF-8"); proc.waitFor()
     if (proc.exitValue() != 0)
@@ -301,9 +319,11 @@ runBtn.addActionListener({ e ->
 
     Thread.start {
         try {
+            def bounds = volumeBounds()   // sampled once, shared by every slice
+            double lo = bounds[0]; double hi = bounds[1]
             int totalBoxes = 0; int totalPainted = 0; int slicesWithHrf = 0
             for (int sliceIdx : sliceRange) {
-                def boxes = detectBoxes(sliceIdx, threshold)
+                def boxes = detectBoxes(sliceIdx, threshold, lo, hi)
                 if (boxes.isEmpty()) continue
                 slicesWithHrf++; totalBoxes += boxes.size()
                 if (useTiles) {
